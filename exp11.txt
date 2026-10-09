@@ -1,0 +1,242 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# =====================================================
+# 1. M-PSK MAPPER USING GRAY MAPPING
+# =====================================================
+def mpsk_mapper(bits, M, normalize=True):
+    k = int(np.log2(M))
+    bits = np.asarray(bits, dtype=int).reshape(-1, k)
+
+    # Convert binary bits to integer symbols
+    binary = bits.dot(2 ** np.arange(k - 1, -1, -1))
+
+    # Binary to Gray code
+    gray = binary ^ (binary >> 1)
+
+    # Gray-coded M-PSK constellation
+    symbols = np.exp(1j * 2 * np.pi * gray / M)
+
+    return symbols
+
+
+# =====================================================
+# 2. SQUARE M-QAM MAPPER USING GRAY MAPPING
+# =====================================================
+def mqam_mapper(bits, M, normalize=True):
+    k = int(np.log2(M))
+    L = int(np.sqrt(M))
+
+    if L * L != M or L & (L - 1):
+        raise ValueError("M must be a square power of 2, e.g. 16, 64.")
+
+    if k % 2 != 0:
+        raise ValueError("Square QAM requires an even number of bits per symbol.")
+
+    bits = np.asarray(bits, dtype=int).reshape(-1, k)
+    half = k // 2
+
+    # Separate bits for I and Q axes
+    I_binary = bits[:, :half].dot(
+        2 ** np.arange(half - 1, -1, -1)
+    )
+    Q_binary = bits[:, half:].dot(
+        2 ** np.arange(half - 1, -1, -1)
+    )
+
+    # Binary to Gray code
+    I_gray = I_binary ^ (I_binary >> 1)
+    Q_gray = Q_binary ^ (Q_binary >> 1)
+
+    # Gray-coded PAM levels
+    levels = np.arange(-(L - 1), L, 2)
+    I = levels[I_gray]
+    Q = levels[Q_gray]
+
+    symbols = I + 1j * Q
+
+    if normalize:
+        symbols = symbols / np.sqrt(2 * (M - 1) / 3)
+
+    return symbols
+
+
+# =====================================================
+# 3. MINIMUM EUCLIDEAN DISTANCE DEMAPPER
+# =====================================================
+def demapper(received, constellation, labels):
+    received = np.asarray(received).reshape(-1)
+
+    distances = np.abs(
+        received[:, None] - constellation[None, :]
+    ) ** 2
+
+    indices = np.argmin(distances, axis=1)
+
+    return labels[indices], indices
+
+
+# =====================================================
+# 4. GRAY LABELS AND CONSTELLATIONS
+# =====================================================
+def gray_code(n):
+    return n ^ (n >> 1)
+
+
+def get_mpsk_constellation(M):
+    labels = np.arange(M)
+    gray = np.array([gray_code(n) for n in labels])
+    constellation = np.exp(1j * 2 * np.pi * gray / M)
+    return constellation, labels
+
+
+def get_mqam_constellation(M, normalize=True):
+    L = int(np.sqrt(M))
+    k = int(np.log2(M))
+    half = k // 2
+
+    if L * L != M or k % 2:
+        raise ValueError("Use square QAM such as 16-QAM or 64-QAM.")
+
+    levels = np.arange(-(L - 1), L, 2)
+    scale = np.sqrt(2 * (M - 1) / 3) if normalize else 1
+
+    constellation = []
+    labels = []
+
+    for bI in range(L):
+        for bQ in range(L):
+            gI = gray_code(bI)
+            gQ = gray_code(bQ)
+
+            I = levels[gI]
+            Q = levels[gQ]
+
+            constellation.append((I + 1j * Q) / scale)
+
+            # Corresponding original binary label
+            label = (bI << half) | bQ
+            labels.append(label)
+
+    return np.array(constellation), np.array(labels)
+
+
+# =====================================================
+# 5. AVERAGE SYMBOL ENERGY
+# =====================================================
+def average_energy(constellation):
+    return np.mean(np.abs(constellation) ** 2)
+
+
+# =====================================================
+# 6. TEST M-PSK AND M-QAM
+# =====================================================
+M_PSK = 8
+M_QAM = 16
+
+psk_raw, psk_labels = get_mpsk_constellation(M_PSK)
+qam_raw, qam_labels = get_mqam_constellation(
+    M_QAM, normalize=False
+)
+
+psk_norm, _ = get_mpsk_constellation(M_PSK)
+qam_norm, _ = get_mqam_constellation(
+    M_QAM, normalize=True
+)
+
+print("===== ENERGY VERIFICATION =====")
+print(f"{M_PSK}-PSK energy before normalization: "
+      f"{average_energy(psk_raw):.4f}")
+print(f"{M_PSK}-PSK energy after normalization: "
+      f"{average_energy(psk_norm):.4f}")
+
+print(f"\n{M_QAM}-QAM energy before normalization: "
+      f"{average_energy(qam_raw):.4f}")
+print(f"{M_QAM}-QAM energy after normalization: "
+      f"{average_energy(qam_norm):.4f}")
+
+# =====================================================
+# 7. RANDOM DATA MAPPING AND DETECTION
+# =====================================================
+rng = np.random.default_rng(42)
+
+# M-PSK: 3 bits per symbol
+psk_bits = rng.integers(0, 2, 300 * int(np.log2(M_PSK)))
+psk_tx = mpsk_mapper(psk_bits, M_PSK)
+
+# M-QAM: 4 bits per symbol
+qam_bits = rng.integers(0, 2, 400 * int(np.log2(M_QAM)))
+qam_tx = mqam_mapper(qam_bits, M_QAM)
+
+# Detection using minimum Euclidean distance
+psk_detected, _ = demapper(
+    psk_tx, psk_norm, psk_labels
+)
+qam_detected, _ = demapper(
+    qam_tx, qam_norm, qam_labels
+)
+
+# Map input bits to their binary symbol labels
+def bits_to_int(bits, k):
+    return np.asarray(bits).reshape(-1, k).dot(
+        2 ** np.arange(k - 1, -1, -1)
+    )
+
+psk_original = bits_to_int(psk_bits, 3)
+qam_original = bits_to_int(qam_bits, 4)
+
+print("\n===== MAPPING / DEMAPPING VERIFICATION =====")
+print("M-PSK symbol errors:",
+      np.sum(psk_detected != psk_original))
+print("M-QAM symbol errors:",
+      np.sum(qam_detected != qam_original))
+
+
+# =====================================================
+# 8. CONSTELLATION PLOTS
+# =====================================================
+fig, axes = plt.subplots(2, 2, figsize=(11, 9))
+
+axes[0, 0].scatter(psk_raw.real, psk_raw.imag)
+axes[0, 0].set_title("8-PSK Before Normalization")
+axes[0, 0].set_xlabel("In-phase (I)")
+axes[0, 0].set_ylabel("Quadrature (Q)")
+
+axes[0, 1].scatter(psk_norm.real, psk_norm.imag)
+axes[0, 1].set_title("8-PSK After Normalization")
+axes[0, 1].set_xlabel("In-phase (I)")
+axes[0, 1].set_ylabel("Quadrature (Q)")
+
+axes[1, 0].scatter(qam_raw.real, qam_raw.imag)
+axes[1, 0].set_title("16-QAM Before Normalization")
+axes[1, 0].set_xlabel("In-phase (I)")
+axes[1, 0].set_ylabel("Quadrature (Q)")
+
+axes[1, 1].scatter(qam_norm.real, qam_norm.imag)
+axes[1, 1].set_title("16-QAM After Normalization")
+axes[1, 1].set_xlabel("In-phase (I)")
+axes[1, 1].set_ylabel("Quadrature (Q)")
+
+for ax in axes.flat:
+    ax.grid(True)
+    ax.axhline(0, linewidth=0.7)
+    ax.axvline(0, linewidth=0.7)
+    ax.set_aspect("equal", adjustable="box")
+
+plt.tight_layout()
+plt.show()
+
+
+# =====================================================
+# 9. MINIMUM EUCLIDEAN DISTANCE
+# =====================================================
+def minimum_distance(constellation):
+    distances = np.abs(
+        constellation[:, None] - constellation[None, :]
+    )
+    distances[distances == 0] = np.inf
+    return np.min(distances)
+
+print("\n===== MINIMUM EUCLIDEAN DISTANCE =====")
+print(f"8-PSK: {minimum_distance(psk_norm):.4f}")
+print(f"16-QAM: {minimum_distance(qam_norm):.4f}")
